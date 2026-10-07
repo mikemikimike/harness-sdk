@@ -41,23 +41,30 @@ def _restore_media(data: dict[str, Any]) -> ToolResultContent | None:
     return None
 
 
-def _extract_shell_output(data: object) -> str | None:
-    """Extract stdout from a serialized shell tool result."""
+def _render_shell_result(data: object) -> str | None:
+    """Render a serialized shell tool result with stdout first."""
     if isinstance(data, dict):
         if (
             isinstance(data.get("output"), str)
             and isinstance(data.get("error"), str)
             and isinstance(data.get("exit_code"), int)
         ):
-            return data["output"]
+            parts = [data["output"]]
+            if data["error"]:
+                parts.append(f"[stderr]\n{data['error']}")
+            parts.append(f"[exit_code: {data['exit_code']}]")
+            additional_data = {key: value for key, value in data.items() if key not in {"output", "error", "exit_code"}}
+            if additional_data:
+                parts.append(json.dumps(additional_data, indent=2))
+            return "\n\n".join(parts)
         for key in ("text", "json"):
             if key in data:
-                output = _extract_shell_output(data[key])
-                if output is not None:
-                    return output
+                rendered = _render_shell_result(data[key])
+                if rendered is not None:
+                    return rendered
     elif isinstance(data, str):
         try:
-            return _extract_shell_output(json.loads(data))
+            return _render_shell_result(json.loads(data))
         except (TypeError, ValueError):
             return None
     return None
@@ -65,9 +72,9 @@ def _extract_shell_output(data: object) -> str | None:
 
 def _extract_text(data: object) -> str | None:
     """Extract searchable text from decoded stash data."""
-    shell_output = _extract_shell_output(data)
-    if shell_output is not None:
-        return shell_output
+    shell_result = _render_shell_result(data)
+    if shell_result is not None:
+        return shell_result
     if isinstance(data, str):
         return data
     if isinstance(data, dict):
@@ -102,8 +109,8 @@ def _create_retrieval_tool(stash: Stash, max_result_tokens: int | None = None) -
                 media = _restore_media(result)
                 if media is not None:
                     return ToolResult(toolUseId=tool_use_id, status="success", content=[media])
-            shell_output = _extract_shell_output(result)
-            full_text = shell_output if shell_output is not None else json.dumps(result)
+            shell_result = _render_shell_result(result)
+            full_text = shell_result if shell_result is not None else json.dumps(result)
             if len(full_text) > max_chars:
                 full_text = full_text[:max_chars] + "\n\n[truncated]"
             content: list[ToolResultContent] = [ToolResultContent(text=full_text)]

@@ -70,7 +70,19 @@ describe('retrieval tool', () => {
   it('retrieves multiline shell output by its stdout lines', async () => {
     const output = makeShellOutput(50)
     const stash = new Stash(new InMemoryStorage(), 'test-session', 'test-agent')
-    const ref = await stash.store('tool-shell', 0, encodeJSON({ json: { output, error: '', exit_code: 0 } }))
+    const ref = await stash.store(
+      'tool-shell',
+      0,
+      encodeJSON({
+        json: {
+          output,
+          error: 'COMPILER_ERROR: build failed',
+          exit_code: 2,
+          duration_ms: 123,
+          host: 'build-worker',
+        },
+      })
+    )
     const retrievalTool = createRetrievalTool(stash)
 
     const patternResult = (await invoke(retrievalTool, {
@@ -80,13 +92,46 @@ describe('retrieval tool', () => {
     })) as string
     expect(patternResult).toContain('> 25| line 25: MARKER')
 
+    const stderrResult = (await invoke(retrievalTool, {
+      reference: ref,
+      pattern: 'COMPILER_ERROR',
+      context_lines: 0,
+    })) as string
+    expect(stderrResult).toContain('COMPILER_ERROR: build failed')
+
     const rangeResult = (await invoke(retrievalTool, { reference: ref, line_range: { start: 24, end: 26 } })) as string
     expect(rangeResult).toContain('line 24')
     expect(rangeResult).toContain('line 26')
     expect(rangeResult).not.toContain('line 23')
+    expect(rangeResult).not.toContain('COMPILER_ERROR')
 
     const fullResult = await invoke(retrievalTool, { reference: ref })
-    expect(fullResult).toBe(output)
+    expect(fullResult).toContain(output)
+    expect(fullResult).toContain('[stderr]\nCOMPILER_ERROR: build failed')
+    expect(fullResult).toContain('[exit_code: 2]')
+    expect(fullResult).toContain('"duration_ms": 123')
+    expect(fullResult).toContain('"host": "build-worker"')
+  })
+
+  it('retrieves and searches stderr when shell stdout is empty', async () => {
+    const stash = new Stash(new InMemoryStorage(), 'test-session', 'test-agent')
+    const ref = await stash.store(
+      'tool-shell',
+      0,
+      encodeJSON({ json: { output: '', error: 'COMMAND_ERROR: failed', exit_code: 1 } })
+    )
+    const retrievalTool = createRetrievalTool(stash)
+
+    const fullResult = (await invoke(retrievalTool, { reference: ref })) as string
+    expect(fullResult).toContain('[stderr]\nCOMMAND_ERROR: failed')
+    expect(fullResult).toContain('[exit_code: 1]')
+
+    const searchResult = (await invoke(retrievalTool, {
+      reference: ref,
+      pattern: 'COMMAND_ERROR',
+      context_lines: 0,
+    })) as string
+    expect(searchResult).toContain('COMMAND_ERROR: failed')
   })
 
   it('returns error for unknown reference', async () => {
